@@ -24,8 +24,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -43,6 +43,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,10 +56,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import io.github.originaldadi.soundcast.R
+import io.github.originaldadi.soundcast.core.LinkType
 import io.github.originaldadi.soundcast.core.SonosClient
 import io.github.originaldadi.soundcast.core.SonosGroup
 import io.github.originaldadi.soundcast.core.SsdpDiscovery
-import io.github.originaldadi.soundcast.core.WavStreamServer
+import io.github.originaldadi.soundcast.core.AudioStreamServer
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -168,7 +170,8 @@ private fun CastScreen() {
 
     Scaffold { padding ->
         Column(
-            Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 12.dp),
+            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
@@ -190,8 +193,8 @@ private fun CastScreen() {
                 )
             }
 
-            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(groups, key = { it.coordinatorUuid }) { group ->
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                groups.forEach { group -> key(group.coordinatorUuid) {
                     val isSelected = group == selected
                     Card(
                         Modifier.fillMaxWidth().clickable { selected = group },
@@ -213,7 +216,7 @@ private fun CastScreen() {
                             }
                         }
                     }
-                }
+                } }
             }
 
             val current = selected
@@ -282,16 +285,16 @@ private fun AdvancedPanel(casting: Boolean, neteaseInstalled: Boolean) {
     var expanded by remember { mutableStateOf(false) }
     val bufferMs by Settings.bufferMillis.collectAsState()
     val source by Settings.source.collectAsState()
+    val format by Settings.format.collectAsState()
+    val sampleRate by Settings.sampleRate.collectAsState()
+    val linkType by Settings.linkType.collectAsState()
     // Track the slider locally so dragging is smooth; save when the finger lifts.
     var sliderMs by remember(bufferMs) { mutableFloatStateOf(bufferMs.toFloat()) }
 
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(
-            stringResource(if (expanded) R.string.advanced_hide else R.string.advanced_show),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.clickable { expanded = !expanded }.padding(vertical = 6.dp),
-        )
+        OutlinedButton(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(if (expanded) R.string.advanced_hide else R.string.advanced_show))
+        }
         if (!expanded) return@Column
 
         // ---- Smooth <-> low delay
@@ -303,7 +306,7 @@ private fun AdvancedPanel(casting: Boolean, neteaseInstalled: Boolean) {
             value = sliderMs,
             onValueChange = { sliderMs = it },
             onValueChangeFinished = { Settings.setBufferMillis(context, (sliderMs / 100f).roundToInt() * 100) },
-            valueRange = WavStreamServer.MIN_QUEUE_MS.toFloat()..WavStreamServer.MAX_QUEUE_MS.toFloat(),
+            valueRange = AudioStreamServer.MIN_QUEUE_MS.toFloat()..AudioStreamServer.MAX_QUEUE_MS.toFloat(),
         )
         Row {
             Text(stringResource(R.string.buffer_low_delay), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
@@ -314,6 +317,47 @@ private fun AdvancedPanel(casting: Boolean, neteaseInstalled: Boolean) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        // ---- Audio format
+        Spacer(Modifier.height(8.dp))
+        Text(stringResource(R.string.format_label), style = MaterialTheme.typography.bodyMedium)
+        listOf(
+            AudioFormatChoice.WAV to R.string.format_wav,
+            AudioFormatChoice.AAC_320 to R.string.format_aac_320,
+            AudioFormatChoice.AAC_256 to R.string.format_aac_256,
+            AudioFormatChoice.AAC_128 to R.string.format_aac_128,
+        ).forEach { (choice, label) ->
+            SourceOption(stringResource(label), selected = format == choice, enabled = !casting) {
+                Settings.setFormat(context, choice)
+            }
+        }
+        SettingHint(R.string.format_hint)
+
+        // ---- Sample rate
+        Spacer(Modifier.height(8.dp))
+        Text(stringResource(R.string.rate_label), style = MaterialTheme.typography.bodyMedium)
+        Settings.SAMPLE_RATES.forEach { rate ->
+            SourceOption(
+                stringResource(R.string.rate_value, rate / 1000f),
+                selected = sampleRate == rate,
+                enabled = !casting,
+            ) { Settings.setSampleRate(context, rate) }
+        }
+        SettingHint(R.string.rate_hint)
+
+        // ---- Link type
+        Spacer(Modifier.height(8.dp))
+        Text(stringResource(R.string.link_label), style = MaterialTheme.typography.bodyMedium)
+        listOf(
+            LinkType.STANDARD to R.string.link_standard,
+            LinkType.RADIO to R.string.link_radio,
+            LinkType.AAC_RADIO to R.string.link_aac_radio,
+        ).forEach { (choice, label) ->
+            SourceOption(stringResource(label), selected = linkType == choice, enabled = !casting) {
+                Settings.setLinkType(context, choice)
+            }
+        }
+        SettingHint(R.string.link_hint)
 
         // ---- Capture source
         Spacer(Modifier.height(8.dp))
@@ -328,12 +372,23 @@ private fun AdvancedPanel(casting: Boolean, neteaseInstalled: Boolean) {
             selected = source == CaptureSource.ALL_APPS || !neteaseInstalled,
             enabled = !casting,
         ) { Settings.setSource(context, CaptureSource.ALL_APPS) }
-        Text(
-            stringResource(if (casting) R.string.source_locked else R.string.source_hint),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        SettingHint(R.string.source_hint)
+        if (casting) SettingHint(R.string.source_locked)
+
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = { Settings.resetStreaming(context) }, enabled = !casting, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(R.string.reset_defaults))
+        }
     }
+}
+
+@Composable
+private fun SettingHint(text: Int) {
+    Text(
+        stringResource(text),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable

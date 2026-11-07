@@ -31,7 +31,8 @@ import io.github.originaldadi.soundcast.R
 import io.github.originaldadi.soundcast.core.Network
 import io.github.originaldadi.soundcast.core.SonosClient
 import io.github.originaldadi.soundcast.core.SonosGroup
-import io.github.originaldadi.soundcast.core.WavStreamServer
+import io.github.originaldadi.soundcast.core.StreamFormat
+import io.github.originaldadi.soundcast.core.AudioStreamServer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -52,7 +53,7 @@ class CastService : Service() {
 
     private var projection: MediaProjection? = null
     private var recorder: AudioRecord? = null
-    private var server: WavStreamServer? = null
+    private var server: AudioStreamServer? = null
     private var group: SonosGroup? = null
     private var settingsJob: Job? = null
     private var wifiLocks: List<WifiManager.WifiLock> = emptyList()
@@ -120,15 +121,22 @@ class CastService : Service() {
             }
         }, mainHandler)
 
+        // Format settings are read once per session (they're locked while casting).
+        val sampleRate = Settings.sampleRate.value
+        val audioFormat = Settings.format.value
+        val linkType = Settings.linkType.value
+
         val record = try {
-            buildRecorder(mp)
+            buildRecorder(mp, sampleRate)
         } catch (e: Exception) {
             fail("Could not start audio capture: ${e.message}")
             return
         }
         recorder = record
 
-        val wav = WavStreamServer(SAMPLE_RATE, CHANNELS, PREFERRED_PORT)
+        val streamFormat = if (audioFormat.isAac) StreamFormat.aac(audioFormat.bitrate)
+        else StreamFormat.wav(sampleRate, CHANNELS)
+        val wav = AudioStreamServer(streamFormat, PREFERRED_PORT)
         wav.maxQueuedMillis = Settings.bufferMillis.value
         // The slider applies live while casting.
         settingsJob = scope.launch { Settings.bufferMillis.collect { ms -> wav.maxQueuedMillis = ms } }
@@ -143,7 +151,17 @@ class CastService : Service() {
         holdLocks()
         capturing = true
         record.startRecording()
-        thread(name = "audio-capture", isDaemon = true) { captureLoop(record, wav) }
+        val encoder = if (audioFormat.isAac) {
+            try {
+                AacEncoder(sampleRate, CHANNELS, audioFormat.bitrate) { frame -> wav.publish(frame) }
+            } catch (e: Exception) {
+                fail("This phone's AAC encoder failed: ${e.message}. Try WAV.")
+                return
+            }
+        } else {
+            null
+        }
+        thread(name = "audio-capture", isDaemon = true) { captureLoop(record, wav, encoder, sampleRate) }
 
         scope.launch {
             try {
@@ -155,8 +173,14 @@ class CastService : Service() {
                 }
                 if (server !== wav) return@launch // stopped while buffering
                 val ip = Network.localAddressFacing(target.coordinatorHost)
-                val url = "http://$ip:$port${WavStreamServer.STREAM_PATH}"
-                sonos.playStream(target.coordinatorHost, url, getString(R.string.stream_title, Build.MODEL))
+                val url = "http://$ip:$port${streamFormat.path}"
+                sonos.playStream(
+                    target.coordinatorHost,
+                    url,
+                    getString(R.string.stream_title, Build.MODEL),
+                    mimeType = streamFormat.contentType,
+                    linkType = linkType,
+                )
                 CastState.set(CastStatus.Casting(target, url))
                 // Report stream health on screen so stutter can be diagnosed.
                 while (server === wav) {
@@ -178,7 +202,7 @@ class CastService : Service() {
     }
 
     @SuppressLint("MissingPermission") // RECORD_AUDIO is checked below.
-    private fun buildRecorder(mp: MediaProjection): AudioRecord {
+    private fun buildRecorder(mp: MediaProjection, sampleRate: Int): AudioRecord {
         check(ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             "microphone/audio permission not granted"
         }
@@ -195,30 +219,37 @@ class CastService : Service() {
         val config = builder.build()
         val format = AudioFormat.Builder()
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-            .setSampleRate(SAMPLE_RATE)
+            .setSampleRate(sampleRate)
             .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
             .build()
-        val minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT)
+        val minBuffer = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT)
         return AudioRecord.Builder()
             .setAudioFormat(format)
-            .setBufferSizeInBytes(maxOf(minBuffer * 4, SAMPLE_RATE * CHANNELS * 2 / 2)) // >= 0.5 s
+            .setBufferSizeInBytes(maxOf(minBuffer * 4, sampleRate * CHANNELS * 2 / 2)) // >= 0.5 s
             .setAudioPlaybackCaptureConfig(config)
             .build()
             .also { check(it.state == AudioRecord.STATE_INITIALIZED) { "recorder failed to initialise" } }
     }
 
-    private fun captureLoop(record: AudioRecord, wav: WavStreamServer) {
+    private fun captureLoop(record: AudioRecord, wav: AudioStreamServer, encoder: AacEncoder?, sampleRate: Int) {
         // Audio threads that get descheduled miss data and cause clicks.
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
-        val buffer = ByteArray(CHUNK_BYTES)
-        while (capturing) {
-            val n = record.read(buffer, 0, buffer.size)
-            if (n > 0) {
-                wav.publish(buffer, n)
-            } else if (n < 0) {
-                Log.w(TAG, "AudioRecord.read returned $n")
-                break
+        val buffer = ByteArray(sampleRate * CHANNELS * 2 / 20) // 50 ms
+        try {
+            while (capturing) {
+                val n = record.read(buffer, 0, buffer.size)
+                if (n > 0) {
+                    if (encoder != null) encoder.encode(buffer, n) else wav.publish(buffer, n)
+                } else if (n < 0) {
+                    Log.w(TAG, "AudioRecord.read returned $n")
+                    break
+                }
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "Capture failed", e)
+            if (capturing) fail("Audio capture stopped: ${e.message}")
+        } finally {
+            encoder?.let { runCatching { it.release() } }
         }
     }
 
@@ -322,9 +353,7 @@ class CastService : Service() {
 
         private const val CHANNEL_ID = "casting"
         private const val NOTIFICATION_ID = 1
-        const val SAMPLE_RATE = 44_100
         const val CHANNELS = 2
-        private const val CHUNK_BYTES = SAMPLE_RATE * CHANNELS * 2 / 20 // 50 ms
         private const val PREFERRED_PORT = 8090
 
         fun start(context: Context, resultCode: Int, data: Intent, group: SonosGroup) {

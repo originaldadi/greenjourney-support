@@ -21,6 +21,27 @@ data class SonosGroup(
 class SonosException(message: String, cause: Throwable? = null) : IOException(message, cause)
 
 /**
+ * How the stream address is handed to the speaker. Sonos treats each differently
+ * (buffering, reconnects), and which works best varies, so it's a user setting.
+ */
+enum class LinkType {
+    /** Plain http:// address, played like a track. */
+    STANDARD,
+    /** x-rincon-mp3radio:// address, played like an internet radio station. */
+    RADIO,
+    /** aac://http:// address, for AAC radio streams. */
+    AAC_RADIO;
+
+    fun speakerUri(httpUrl: String): String = when (this) {
+        STANDARD -> httpUrl
+        RADIO -> "x-rincon-mp3radio://" + httpUrl.removePrefix("http://")
+        AAC_RADIO -> "aac://$httpUrl"
+    }
+
+    val isRadio: Boolean get() = this != STANDARD
+}
+
+/**
  * Talks to Sonos speakers over their local UPnP control interface (port 1400).
  */
 class SonosClient(
@@ -58,7 +79,14 @@ class SonosClient(
 
     // -------------------------------------------------------------- playback
 
-    fun playStream(coordinatorHost: String, streamUrl: String, title: String) {
+    fun playStream(
+        coordinatorHost: String,
+        streamUrl: String,
+        title: String,
+        mimeType: String = "audio/wav",
+        linkType: LinkType = LinkType.STANDARD,
+    ) {
+        val uri = linkType.speakerUri(streamUrl)
         soap(
             coordinatorHost,
             AV_TRANSPORT_PATH,
@@ -66,8 +94,8 @@ class SonosClient(
             "SetAVTransportURI",
             listOf(
                 "InstanceID" to "0",
-                "CurrentURI" to streamUrl,
-                "CurrentURIMetaData" to didl(streamUrl, title),
+                "CurrentURI" to uri,
+                "CurrentURIMetaData" to didl(uri, title, mimeType, linkType.isRadio),
             ),
         )
         soap(coordinatorHost, AV_TRANSPORT_PATH, AV_TRANSPORT, "Play", listOf("InstanceID" to "0", "Speed" to "1"))
@@ -161,16 +189,17 @@ class SonosClient(
                 "<s:Body><u:$action xmlns:u=\"$service\">$argXml</u:$action></s:Body></s:Envelope>"
         }
 
-        /** DIDL-Lite metadata that tells the speaker this is a WAV stream. */
-        fun didl(streamUrl: String, title: String): String =
+        /** DIDL-Lite metadata describing the stream to the speaker. */
+        fun didl(streamUrl: String, title: String, mimeType: String = "audio/wav", radio: Boolean = false): String =
             "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" " +
                 "xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" " +
                 "xmlns:r=\"urn:schemas-rinconnetworks-com:metadata-1-0/\" " +
                 "xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\">" +
                 "<item id=\"0\" parentID=\"-1\" restricted=\"true\">" +
                 "<dc:title>${escapeXml(title)}</dc:title>" +
-                "<upnp:class>object.item.audioItem.musicTrack</upnp:class>" +
-                "<res protocolInfo=\"http-get:*:audio/wav:*\">${escapeXml(streamUrl)}</res>" +
+                "<upnp:class>${if (radio) "object.item.audioItem.audioBroadcast" else "object.item.audioItem.musicTrack"}</upnp:class>" +
+                (if (radio) "<desc id=\"cdudn\" nameSpace=\"urn:schemas-rinconnetworks-com:metadata-1-0/\">SA_RINCON65031_</desc>" else "") +
+                "<res protocolInfo=\"http-get:*:${escapeXml(mimeType)}:*\">${escapeXml(streamUrl)}</res>" +
                 "</item></DIDL-Lite>"
 
         fun escapeXml(s: String): String = buildString(s.length) {

@@ -19,11 +19,26 @@ isn't suitable for video.
 4. **Tell Sonos to play it.** UPnP `SetAVTransportURI` + `Play` go to the group
    coordinator on port 1400. Volume uses `GroupRenderingControl`, so it moves the whole group.
 
+## Settings (⚙ Settings on the main screen)
+
+| Setting | Options | Notes |
+|---|---|---|
+| Buffer | 0.2–15 s (default 5 s) | Reserve sent to the speaker on connect; also how far it may fall behind. Applies live. |
+| Audio format | WAV, AAC 320/256/128 kbit/s | AAC uses Android's built-in encoder and far less WiFi. |
+| Sample rate | 44.1 / 48 kHz | |
+| Speaker link type | Standard (`http://`), Radio (`x-rincon-mp3radio://`), AAC radio (`aac://http://`) | Which one a speaker handles best varies. |
+| Capture from | Only NetEase Cloud Music / All apps | |
+
+While casting, the status line shows *Skipped audio* (speaker fell behind the buffer),
+*Silence sent* (nothing was being captured) and *Connections* (more than 1 means the
+speaker reconnected).
+
 ## Code layout
 
 | Path | What |
 |---|---|
-| `app/src/main/java/.../core/` | Plain Kotlin, no Android: discovery, Sonos control, WAV stream server |
+| `app/src/main/java/.../core/` | Plain Kotlin, no Android: discovery, Sonos control, WAV/AAC stream server |
+| `app/src/main/java/.../android/AacEncoder.kt` | MediaCodec AAC-LC encoder producing ADTS frames |
 | `app/src/main/java/.../android/CastService.kt` | Foreground service: capture, streaming, notification with Stop |
 | `app/src/main/java/.../android/MainActivity.kt` | Compose screen: speaker list, volume, start/stop |
 | `app/src/test/` | Unit tests for the core, using a fake speaker and fake SSDP responder |

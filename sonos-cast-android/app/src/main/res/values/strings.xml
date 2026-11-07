@@ -19,8 +19,8 @@
     <string name="notif_casting_to">Casting to %1$s</string>
     <string name="stream_title">Music from %1$s</string>
     <string name="open_netease">Open NetEase Cloud Music</string>
-    <string name="advanced_show">Advanced ▾</string>
-    <string name="advanced_hide">Advanced ▴</string>
+    <string name="advanced_show">⚙ Settings ▾</string>
+    <string name="advanced_hide">⚙ Settings ▴</string>
     <string name="buffer_label">Buffer: %1$.1f s</string>
     <string name="buffer_low_delay">Low delay</string>
     <string name="buffer_smooth">Smooth</string>
@@ -30,5 +30,20 @@
     <string name="source_netease_missing">Only NetEase Cloud Music (not installed)</string>
     <string name="source_all">All apps</string>
     <string name="source_hint">\"Only NetEase\" keeps other apps\' sounds on the phone. If Sonos stays silent while NetEase plays and \"Silence sent\" keeps rising, NetEase is blocking capture.</string>
-    <string name="source_locked">Stop casting to change this.</string>
+    <string name="source_locked">Stop casting to change format, sample rate, link type or source. Buffer changes apply straight away.</string>
+    <string name="format_label">Audio format</string>
+    <string name="format_wav">WAV · lossless (1.4 Mbit/s)</string>
+    <string name="format_aac_320">AAC 320 kbit/s</string>
+    <string name="format_aac_256">AAC 256 kbit/s</string>
+    <string name="format_aac_128">AAC 128 kbit/s</string>
+    <string name="format_hint">AAC uses far less WiFi, so short WiFi stalls hurt less. Try it if \"Skipped audio\" rises.</string>
+    <string name="rate_label">Sample rate</string>
+    <string name="rate_value">%1$.1f kHz</string>
+    <string name="rate_hint">48 kHz matches most phones\' internal audio and the Arc. Try it if skips continue.</string>
+    <string name="link_label">Speaker link type</string>
+    <string name="link_standard">Standard (http)</string>
+    <string name="link_radio">Radio (x-rincon-mp3radio)</string>
+    <string name="link_aac_radio">AAC radio (aac://)</string>
+    <string name="link_hint">How the stream is handed to Sonos. Radio types may stop reconnects (\"Connections\" above 1). If one won\'t play, try another or reset to defaults.</string>
+    <string name="reset_defaults">Reset to defaults</string>
 </resources>

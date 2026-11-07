@@ -15,20 +15,52 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
+/** What the server streams: container/codec details the speaker needs. */
+data class StreamFormat(
+    val contentType: String,
+    val path: String,
+    /** Sent once at the start of every connection (the WAV header; empty for AAC). */
+    val header: ByteArray,
+    /** Average stream rate, used to convert the buffer setting between bytes and time. */
+    val bytesPerSecond: Int,
+    /** 100 ms of encoded silence, or null if the format can't be padded (AAC). */
+    val silence: ByteArray?,
+) {
+    companion object {
+        fun wav(sampleRate: Int = 44_100, channels: Int = 2): StreamFormat {
+            val bps = sampleRate * channels * 2
+            return StreamFormat(
+                contentType = "audio/wav",
+                path = "/stream.wav",
+                header = AudioStreamServer.wavHeader(sampleRate, channels),
+                bytesPerSecond = bps,
+                silence = ByteArray((bps / 10) and 0x7FFFFFFC),
+            )
+        }
+
+        fun aac(bitrate: Int): StreamFormat = StreamFormat(
+            contentType = "audio/aac",
+            path = "/stream.aac",
+            header = ByteArray(0),
+            bytesPerSecond = bitrate / 8,
+            silence = null,
+        )
+    }
+}
+
 /**
- * A tiny HTTP server that serves live 16-bit PCM audio as an endless WAV file at
- * [STREAM_PATH]. The speaker connects to it and pulls the audio.
+ * A tiny HTTP server that serves live audio at [StreamFormat.path]: an endless WAV
+ * file, or an ADTS AAC stream. The speaker connects to it and pulls the audio.
  *
- * Call [publish] with raw little-endian PCM as it is captured. Every connected
- * client gets its own small queue; if a client falls behind, its oldest audio is
- * dropped so the delay never grows without bound.
+ * Call [publish] as audio is produced (raw PCM for WAV; whole ADTS frames for AAC).
+ * Every connected client gets its own queue; if a client falls behind, its oldest
+ * audio is dropped so the delay never grows without bound.
  */
-class WavStreamServer(
-    val sampleRate: Int = 44_100,
-    val channels: Int = 2,
+class AudioStreamServer(
+    val format: StreamFormat = StreamFormat.wav(),
     private val requestedPort: Int = 0,
 ) {
-    private val bytesPerSecond = sampleRate * channels * 2
+    private val bytesPerSecond = format.bytesPerSecond
     private val clients = CopyOnWriteArrayList<ArrayBlockingQueue<ByteArray>>()
     private val sockets = CopyOnWriteArrayList<Socket>()
     private var server: ServerSocket? = null
@@ -132,17 +164,17 @@ class WavStreamServer(
             val path = requestLine.getOrNull(1).orEmpty().substringBefore('?')
             val out = BufferedOutputStream(socket.getOutputStream(), 16 * 1024)
 
-            if (path != STREAM_PATH || (method != "GET" && method != "HEAD")) {
+            if (path != format.path || (method != "GET" && method != "HEAD")) {
                 out.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
                 out.flush()
                 return
             }
-            out.write(responseHeaders().toByteArray(Charsets.US_ASCII))
+            out.write(responseHeaders(format.contentType).toByteArray(Charsets.US_ASCII))
             if (method == "HEAD") {
                 out.flush()
                 return
             }
-            out.write(wavHeader(sampleRate, channels))
+            if (format.header.isNotEmpty()) out.write(format.header)
             out.flush()
             streamTo(out)
         } catch (_: IOException) {
@@ -173,7 +205,7 @@ class WavStreamServer(
             clients += queue
         }
         connections.incrementAndGet()
-        val silence = ByteArray((bytesPerSecond / 10) and 0x7FFFFFFC) // 100 ms
+        val silence = format.silence // 100 ms, if the format allows padding
         var idleMillis = 0L
         try {
             while (running) {
@@ -187,7 +219,7 @@ class WavStreamServer(
                     // quiet for a while (nothing playing), send silence in real time so
                     // the speaker doesn't time out.
                     idleMillis += 100
-                    if (idleMillis < IDLE_BEFORE_SILENCE_MS) continue
+                    if (silence == null || idleMillis < IDLE_BEFORE_SILENCE_MS) continue
                     silenceChunks.incrementAndGet()
                     out.write(silence)
                 }
@@ -199,13 +231,13 @@ class WavStreamServer(
     }
 
     companion object {
-        const val STREAM_PATH = "/stream.wav"
         const val MIN_QUEUE_MS = 200
-        const val MAX_QUEUE_MS = 10_000
+        const val MAX_QUEUE_MS = 15_000
         const val DEFAULT_QUEUE_MS = 5000
         private const val QUEUE_HEADROOM_MS = 1000
         private const val FULL_REPLAY_WINDOW_MS = 30_000L
         private const val RECONNECT_REPLAY_MS = 500
+        // AAC frames are ~21-23 ms each: room for the 15 s maximum plus headroom.
         private const val QUEUE_CAPACITY = 1024
         private const val SEND_BUFFER_BYTES = 64 * 1024 // ~0.4 s at CD quality
         private const val IDLE_BEFORE_SILENCE_MS = 500L
@@ -216,9 +248,9 @@ class WavStreamServer(
             return (maxMillis / chunkMillis).toInt().coerceIn(1, QUEUE_CAPACITY)
         }
 
-        fun responseHeaders(): String =
+        fun responseHeaders(contentType: String = "audio/wav"): String =
             "HTTP/1.1 200 OK\r\n" +
-                "Content-Type: audio/wav\r\n" +
+                "Content-Type: $contentType\r\n" +
                 "Cache-Control: no-cache, no-store\r\n" +
                 "Accept-Ranges: none\r\n" +
                 "Connection: close\r\n" +
@@ -249,6 +281,28 @@ class WavStreamServer(
                 put("data".toByteArray(Charsets.US_ASCII))
                 putInt(dataSize.toInt())
             }.array()
+        }
+
+        /** ADTS sampling-frequency index for [sampleRate]. */
+        fun adtsFrequencyIndex(sampleRate: Int): Int = when (sampleRate) {
+            96_000 -> 0; 88_200 -> 1; 64_000 -> 2; 48_000 -> 3; 44_100 -> 4; 32_000 -> 5
+            24_000 -> 6; 22_050 -> 7; 16_000 -> 8; 12_000 -> 9; 11_025 -> 10; 8_000 -> 11
+            else -> throw IllegalArgumentException("No ADTS index for $sampleRate Hz")
+        }
+
+        /**
+         * Writes a 7-byte ADTS header (AAC-LC, no CRC) at the start of [frame].
+         * [frameLength] includes the header itself.
+         */
+        fun writeAdtsHeader(frame: ByteArray, frameLength: Int, frequencyIndex: Int, channels: Int) {
+            val profile = 1 // AAC LC (audio object type 2) minus one
+            frame[0] = 0xFF.toByte()
+            frame[1] = 0xF1.toByte() // sync, MPEG-4, layer 0, no CRC
+            frame[2] = ((profile shl 6) or (frequencyIndex shl 2) or (channels shr 2)).toByte()
+            frame[3] = (((channels and 3) shl 6) or (frameLength shr 11)).toByte()
+            frame[4] = ((frameLength shr 3) and 0xFF).toByte()
+            frame[5] = (((frameLength and 7) shl 5) or 0x1F).toByte()
+            frame[6] = 0xFC.toByte() // buffer fullness 0x7FF (VBR), one raw block
         }
 
         /** Reads up to the blank line that ends the request headers. */

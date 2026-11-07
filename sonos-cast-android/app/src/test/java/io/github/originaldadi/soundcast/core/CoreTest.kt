@@ -208,7 +208,7 @@ class CoreTest {
     // ------------------------------------------------------------- streaming
 
     @Test fun wavHeaderIsValid() {
-        val h = ByteBuffer.wrap(WavStreamServer.wavHeader(44_100, 2)).order(ByteOrder.LITTLE_ENDIAN)
+        val h = ByteBuffer.wrap(AudioStreamServer.wavHeader(44_100, 2)).order(ByteOrder.LITTLE_ENDIAN)
         assertEquals(44, h.capacity())
         assertEquals("RIFF", String(ByteArray(4).also { h.get(0, it) }))
         assertEquals("WAVE", String(ByteArray(4).also { h.get(8, it) }))
@@ -226,7 +226,7 @@ class CoreTest {
     }
 
     @Test fun streamsPublishedAudio() {
-        val server = WavStreamServer()
+        val server = AudioStreamServer()
         val port = server.start()
         try {
             Socket(InetAddress.getLoopbackAddress(), port).use { s ->
@@ -237,7 +237,7 @@ class CoreTest {
                 assertTrue(head, head.startsWith("HTTP/1.1 200 OK\r\n"))
                 assertTrue(head.contains("Content-Type: audio/wav\r\n"))
                 val wav = ByteArray(44).also { input.readFully(it) }
-                assertArrayEquals(WavStreamServer.wavHeader(44_100, 2), wav)
+                assertArrayEquals(AudioStreamServer.wavHeader(44_100, 2), wav)
 
                 // Wait for the client to register, then publish a recognisable chunk.
                 val deadline = System.currentTimeMillis() + 2000
@@ -262,18 +262,18 @@ class CoreTest {
     @Test fun queueLimitFollowsBufferSetting() {
         val bps = 44_100 * 4
         val chunk50ms = bps / 20
-        assertEquals(40, WavStreamServer.queueLimit(chunk50ms, 2000, bps))
-        assertEquals(4, WavStreamServer.queueLimit(chunk50ms, 200, bps))
-        assertEquals(1, WavStreamServer.queueLimit(bps * 5, 200, bps)) // huge chunk: still keep one
-        val server = WavStreamServer()
+        assertEquals(40, AudioStreamServer.queueLimit(chunk50ms, 2000, bps))
+        assertEquals(4, AudioStreamServer.queueLimit(chunk50ms, 200, bps))
+        assertEquals(1, AudioStreamServer.queueLimit(bps * 5, 200, bps)) // huge chunk: still keep one
+        val server = AudioStreamServer()
         server.maxQueuedMillis = 10
-        assertEquals(WavStreamServer.MIN_QUEUE_MS, server.maxQueuedMillis)
+        assertEquals(AudioStreamServer.MIN_QUEUE_MS, server.maxQueuedMillis)
         server.maxQueuedMillis = 99_000
-        assertEquals(WavStreamServer.MAX_QUEUE_MS, server.maxQueuedMillis)
+        assertEquals(AudioStreamServer.MAX_QUEUE_MS, server.maxQueuedMillis)
     }
 
     @Test fun slowSpeakerOnlyLosesAudioBeyondBuffer() {
-        val server = WavStreamServer()
+        val server = AudioStreamServer()
         server.maxQueuedMillis = 200 // 4 x 50 ms chunks
         val port = server.start()
         try {
@@ -294,7 +294,7 @@ class CoreTest {
     }
 
     @Test fun newSpeakerGetsRecentAudioAtOnce() {
-        val server = WavStreamServer()
+        val server = AudioStreamServer()
         server.maxQueuedMillis = 1500
         val port = server.start()
         try {
@@ -324,7 +324,7 @@ class CoreTest {
     }
 
     @Test fun bufferedMillisTracksReserve() {
-        val server = WavStreamServer()
+        val server = AudioStreamServer()
         assertEquals(5000, server.maxQueuedMillis) // default favours no skips
         repeat(20) { server.publish(ByteArray(8820)) } // 1 s
         assertEquals(1000, server.bufferedMillis())
@@ -332,8 +332,60 @@ class CoreTest {
         assertEquals(5000, server.bufferedMillis())
     }
 
+    @Test fun adtsHeaderMatchesSpec() {
+        val frame = ByteArray(7 + 371)
+        AudioStreamServer.writeAdtsHeader(frame, frame.size, AudioStreamServer.adtsFrequencyIndex(48_000), 2)
+        // Reference: FF F1 4C 80 2F 5F FC for AAC-LC, 48 kHz, stereo, 378-byte frame.
+        assertArrayEquals(
+            byteArrayOf(0xFF.toByte(), 0xF1.toByte(), 0x4C, 0x80.toByte(), 0x2F, 0x5F, 0xFC.toByte()),
+            frame.copyOf(7),
+        )
+        assertEquals(4, AudioStreamServer.adtsFrequencyIndex(44_100))
+    }
+
+    @Test fun linkTypesBuildSpeakerUris() {
+        val url = "http://10.0.0.2:8090/stream.aac"
+        assertEquals(url, LinkType.STANDARD.speakerUri(url))
+        assertEquals("x-rincon-mp3radio://10.0.0.2:8090/stream.aac", LinkType.RADIO.speakerUri(url))
+        assertEquals("aac://http://10.0.0.2:8090/stream.aac", LinkType.AAC_RADIO.speakerUri(url))
+    }
+
+    @Test fun radioPlaybackSendsBroadcastMetadata() = FakeSpeaker().use { fake ->
+        SonosClient(port = fake.port).playStream(
+            "127.0.0.1", "http://10.0.0.2:8090/stream.aac", "t", mimeType = "audio/aac", linkType = LinkType.RADIO,
+        )
+        val body = fake.calls[0].third
+        assertTrue(body.contains("<CurrentURI>x-rincon-mp3radio://10.0.0.2:8090/stream.aac</CurrentURI>"))
+        assertTrue(body.contains("object.item.audioItem.audioBroadcast"))
+        assertTrue(body.contains("http-get:*:audio/aac:*"))
+        assertTrue(body.contains("SA_RINCON65031_"))
+    }
+
+    @Test fun servesAacWithoutHeaderOrPadding() {
+        val server = AudioStreamServer(StreamFormat.aac(256_000))
+        val port = server.start()
+        try {
+            Socket(InetAddress.getLoopbackAddress(), port).use { s ->
+                s.soTimeout = 3000
+                s.getOutputStream().write("GET /stream.aac HTTP/1.1\r\n\r\n".toByteArray())
+                val input = DataInputStream(s.getInputStream())
+                val head = readHead(input)
+                assertTrue(head.contains("Content-Type: audio/aac\r\n"))
+                Thread.sleep(800) // idle: AAC must not be padded with raw zeros
+                assertEquals(0L, server.silenceChunks.get())
+                val deadline = System.currentTimeMillis() + 2000
+                while (server.clientCount == 0 && System.currentTimeMillis() < deadline) Thread.sleep(10)
+                val frame = ByteArray(200) { 5 }
+                server.publish(frame)
+                assertArrayEquals(frame, ByteArray(200).also { input.readFully(it) }) // no WAV header first
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
     @Test fun captureJitterDoesNotInsertSilence() {
-        val server = WavStreamServer()
+        val server = AudioStreamServer()
         val port = server.start()
         try {
             Socket(InetAddress.getLoopbackAddress(), port).use { s ->
@@ -360,7 +412,7 @@ class CoreTest {
     }
 
     @Test fun keepsConnectionAliveWithSilence() {
-        val server = WavStreamServer()
+        val server = AudioStreamServer()
         val port = server.start()
         try {
             Socket(InetAddress.getLoopbackAddress(), port).use { s ->
@@ -378,7 +430,7 @@ class CoreTest {
     }
 
     @Test fun headAndUnknownPaths() {
-        val server = WavStreamServer()
+        val server = AudioStreamServer()
         val port = server.start()
         try {
             fun request(req: String): String = Socket(InetAddress.getLoopbackAddress(), port).use { s ->
