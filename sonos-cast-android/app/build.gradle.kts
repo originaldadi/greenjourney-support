@@ -13,8 +13,22 @@ android {
         // Android 10 is the first version that lets apps capture other apps' audio.
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI run number, so each build installs as a newer version and is identifiable.
+        val build = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionCode = build
+        versionName = "0.1.$build"
+    }
+
+    signingConfigs {
+        // One fixed debug key for every build (local and CI). Without it, each CI
+        // machine generates its own key and Android refuses to install updates over
+        // the previous build. Debug-only key with the standard public password.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
@@ -31,6 +45,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

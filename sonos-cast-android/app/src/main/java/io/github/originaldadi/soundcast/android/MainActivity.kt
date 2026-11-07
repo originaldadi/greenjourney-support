@@ -174,7 +174,16 @@ private fun CastScreen() {
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
+                Spacer(Modifier.size(8.dp))
+                Text(
+                    "v" + io.github.originaldadi.soundcast.BuildConfig.VERSION_NAME,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
             Text(stringResource(R.string.tagline), style = MaterialTheme.typography.bodyMedium)
 
             StatusLine(status)
