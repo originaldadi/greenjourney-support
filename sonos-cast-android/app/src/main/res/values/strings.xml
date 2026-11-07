@@ -9,9 +9,9 @@
     <string name="volume">Volume: %1$d</string>
     <string name="start">Start casting</string>
     <string name="stop">Stop</string>
-    <string name="hint">Music arrives a few seconds late, which is normal for Sonos. Some apps block audio capture and will stay silent. Your phone keeps playing too, so turn its volume down.</string>
+    <string name="hint">Music plays a few seconds behind the phone; that reserve is what keeps it from skipping. Some apps block audio capture and will stay silent. Your phone keeps playing too, so turn its volume down.</string>
     <string name="status_idle">Not casting</string>
-    <string name="status_starting">Connecting to %1$s…</string>
+    <string name="status_starting">Buffering, then starting %1$s…</string>
     <string name="stream_health">Skipped audio: %1$d · Silence sent: %2$d · Connections: %3$d</string>
     <string name="status_casting">Casting to %1$s</string>
     <string name="need_audio_permission">The audio permission is needed to capture music from other apps.</string>
@@ -21,10 +21,10 @@
     <string name="open_netease">Open NetEase Cloud Music</string>
     <string name="advanced_show">Advanced ▾</string>
     <string name="advanced_hide">Advanced ▴</string>
-    <string name="buffer_label">Buffer on phone: %1$.1f s</string>
+    <string name="buffer_label">Buffer: %1$.1f s</string>
     <string name="buffer_low_delay">Low delay</string>
     <string name="buffer_smooth">Smooth</string>
-    <string name="buffer_hint">Applies straight away, even while casting. If \"Skipped audio\" keeps rising, move it towards Smooth. Sonos adds its own 2–3 s on top, which no app can change.</string>
+    <string name="buffer_hint">Applies straight away, even while casting. For no skips, keep it towards Smooth: the speaker gets this much music as a reserve, and music starts and stays this far behind the phone. If \"Skipped audio\" rises, move it further towards Smooth.</string>
     <string name="source_label">Capture audio from</string>
     <string name="source_netease">Only NetEase Cloud Music</string>
     <string name="source_netease_missing">Only NetEase Cloud Music (not installed)</string>

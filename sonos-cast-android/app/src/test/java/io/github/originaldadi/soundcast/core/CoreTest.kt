@@ -295,6 +295,7 @@ class CoreTest {
 
     @Test fun newSpeakerGetsRecentAudioAtOnce() {
         val server = WavStreamServer()
+        server.maxQueuedMillis = 1500
         val port = server.start()
         try {
             // 2 s of 50 ms chunks captured before the speaker connects; chunk i is filled with i+1.
@@ -320,6 +321,15 @@ class CoreTest {
         } finally {
             server.stop()
         }
+    }
+
+    @Test fun bufferedMillisTracksReserve() {
+        val server = WavStreamServer()
+        assertEquals(5000, server.maxQueuedMillis) // default favours no skips
+        repeat(20) { server.publish(ByteArray(8820)) } // 1 s
+        assertEquals(1000, server.bufferedMillis())
+        repeat(200) { server.publish(ByteArray(8820)) } // 10 s more; only 5 s kept
+        assertEquals(5000, server.bufferedMillis())
     }
 
     @Test fun captureJitterDoesNotInsertSilence() {

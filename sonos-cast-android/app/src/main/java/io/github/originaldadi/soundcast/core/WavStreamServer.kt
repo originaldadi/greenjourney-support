@@ -38,8 +38,10 @@ class WavStreamServer(
     val clientCount: Int get() = clients.size
 
     /**
-     * How much audio may wait for each speaker before the oldest is dropped. Lower
-     * means less delay but more risk of skips. Can be changed while streaming.
+     * The buffer setting. A speaker that connects is first sent this much recent
+     * audio at once, giving it a reserve that rides out WiFi hiccups; it is also how
+     * far a speaker may fall behind before the oldest audio is dropped. Higher means
+     * fewer skips but more delay. Can be changed while streaming.
      */
     @Volatile var maxQueuedMillis: Int = DEFAULT_QUEUE_MS
         set(value) { field = value.coerceIn(MIN_QUEUE_MS, MAX_QUEUE_MS) }
@@ -67,6 +69,7 @@ class WavStreamServer(
             ss.bind(InetSocketAddress(0)) // preferred port busy: take any free one
         }
         server = ss
+        startedAtMillis = System.currentTimeMillis()
         running = true
         thread(name = "wav-accept", isDaemon = true) {
             while (running) {
@@ -93,11 +96,12 @@ class WavStreamServer(
     fun publish(pcm: ByteArray, length: Int = pcm.size) {
         if (length <= 0) return
         val chunk = pcm.copyOf(length)
-        val limit = queueLimit(length, maxQueuedMillis, bytesPerSecond)
+        // A little headroom above the replayed reserve so it isn't trimmed straight away.
+        val limit = queueLimit(length, maxQueuedMillis + QUEUE_HEADROOM_MS, bytesPerSecond)
         synchronized(lock) {
             history.addLast(chunk)
             historyBytes += length
-            val keepBytes = prerollMillis().toLong() * bytesPerSecond / 1000
+            val keepBytes = maxQueuedMillis.toLong() * bytesPerSecond / 1000
             while (history.size > 1 && historyBytes - history.first().size >= keepBytes) {
                 historyBytes -= history.removeFirst().size
             }
@@ -109,8 +113,10 @@ class WavStreamServer(
         }
     }
 
-    /** Replay at most this much on connect, and never more than the queue may hold. */
-    private fun prerollMillis(): Int = minOf(PREROLL_MS, maxQueuedMillis)
+    /** How much recent audio is held for replay, in milliseconds. */
+    fun bufferedMillis(): Int = synchronized(lock) { (historyBytes * 1000L / bytesPerSecond).toInt() }
+
+    private var startedAtMillis = 0L
 
     private fun serve(socket: Socket) {
         try {
@@ -154,7 +160,16 @@ class WavStreamServer(
         val queue = ArrayBlockingQueue<ByteArray>(QUEUE_CAPACITY)
         synchronized(lock) {
             // Atomic with publish(): no chunk is missed or sent twice.
-            history.forEach { queue.offer(it) }
+            // The first connections get the whole reserve. A speaker reconnecting later
+            // already played most of it, so it gets only the last moment, to avoid
+            // audibly repeating seconds of music.
+            val early = System.currentTimeMillis() - startedAtMillis < FULL_REPLAY_WINDOW_MS
+            val replayBytes = if (early) Long.MAX_VALUE else RECONNECT_REPLAY_MS.toLong() * bytesPerSecond / 1000
+            var skipped = historyBytes - replayBytes
+            for (chunk in history) {
+                if (skipped > 0) { skipped -= chunk.size; continue }
+                queue.offer(chunk)
+            }
             clients += queue
         }
         connections.incrementAndGet()
@@ -185,10 +200,12 @@ class WavStreamServer(
 
     companion object {
         const val STREAM_PATH = "/stream.wav"
-        const val PREROLL_MS = 1500
         const val MIN_QUEUE_MS = 200
-        const val MAX_QUEUE_MS = 3000
-        const val DEFAULT_QUEUE_MS = 2000
+        const val MAX_QUEUE_MS = 10_000
+        const val DEFAULT_QUEUE_MS = 5000
+        private const val QUEUE_HEADROOM_MS = 1000
+        private const val FULL_REPLAY_WINDOW_MS = 30_000L
+        private const val RECONNECT_REPLAY_MS = 500
         private const val QUEUE_CAPACITY = 1024
         private const val SEND_BUFFER_BYTES = 64 * 1024 // ~0.4 s at CD quality
         private const val IDLE_BEFORE_SILENCE_MS = 500L

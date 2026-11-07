@@ -147,6 +147,13 @@ class CastService : Service() {
 
         scope.launch {
             try {
+                // Collect the reserve before the speaker connects, so it starts with a
+                // full buffer. Gives up waiting after a while (e.g. nothing playing yet).
+                val waitUntil = System.currentTimeMillis() + wav.maxQueuedMillis + 3000
+                while (wav.bufferedMillis() < wav.maxQueuedMillis - 100 && System.currentTimeMillis() < waitUntil) {
+                    kotlinx.coroutines.delay(100)
+                }
+                if (server !== wav) return@launch // stopped while buffering
                 val ip = Network.localAddressFacing(target.coordinatorHost)
                 val url = "http://$ip:$port${WavStreamServer.STREAM_PATH}"
                 sonos.playStream(target.coordinatorHost, url, getString(R.string.stream_title, Build.MODEL))
