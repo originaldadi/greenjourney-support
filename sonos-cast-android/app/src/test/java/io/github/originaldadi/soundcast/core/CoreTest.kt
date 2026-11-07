@@ -259,6 +259,40 @@ class CoreTest {
         }
     }
 
+    @Test fun queueLimitFollowsBufferSetting() {
+        val bps = 44_100 * 4
+        val chunk50ms = bps / 20
+        assertEquals(40, WavStreamServer.queueLimit(chunk50ms, 2000, bps))
+        assertEquals(4, WavStreamServer.queueLimit(chunk50ms, 200, bps))
+        assertEquals(1, WavStreamServer.queueLimit(bps * 5, 200, bps)) // huge chunk: still keep one
+        val server = WavStreamServer()
+        server.maxQueuedMillis = 10
+        assertEquals(WavStreamServer.MIN_QUEUE_MS, server.maxQueuedMillis)
+        server.maxQueuedMillis = 99_000
+        assertEquals(WavStreamServer.MAX_QUEUE_MS, server.maxQueuedMillis)
+    }
+
+    @Test fun slowSpeakerOnlyLosesAudioBeyondBuffer() {
+        val server = WavStreamServer()
+        server.maxQueuedMillis = 200 // 4 x 50 ms chunks
+        val port = server.start()
+        try {
+            Socket(InetAddress.getLoopbackAddress(), port).use { s ->
+                s.receiveBufferSize = 4096
+                s.soTimeout = 3000
+                s.getOutputStream().write("GET /stream.wav HTTP/1.1\r\n\r\n".toByteArray())
+                val deadline = System.currentTimeMillis() + 2000
+                while (server.clientCount == 0 && System.currentTimeMillis() < deadline) Thread.sleep(10)
+                // Speaker stops reading; publish 20 s of audio, far more than the socket buffers hold.
+                val chunk = ByteArray(8820) { 1 }
+                repeat(400) { server.publish(chunk) }
+                assertTrue("expected drops once the 200 ms buffer filled", server.droppedChunks.get() > 300)
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
     @Test fun captureJitterDoesNotInsertSilence() {
         val server = WavStreamServer()
         val port = server.start()

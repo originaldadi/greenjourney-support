@@ -18,4 +18,17 @@
     <string name="notif_channel">Casting</string>
     <string name="notif_casting_to">Casting to %1$s</string>
     <string name="stream_title">Music from %1$s</string>
+    <string name="open_netease">Open NetEase Cloud Music</string>
+    <string name="advanced_show">Advanced ▾</string>
+    <string name="advanced_hide">Advanced ▴</string>
+    <string name="buffer_label">Buffer on phone: %1$.1f s</string>
+    <string name="buffer_low_delay">Low delay</string>
+    <string name="buffer_smooth">Smooth</string>
+    <string name="buffer_hint">Applies straight away, even while casting. If \"Skipped audio\" keeps rising, move it towards Smooth. Sonos adds its own 2–3 s on top, which no app can change.</string>
+    <string name="source_label">Capture audio from</string>
+    <string name="source_netease">Only NetEase Cloud Music</string>
+    <string name="source_netease_missing">Only NetEase Cloud Music (not installed)</string>
+    <string name="source_all">All apps</string>
+    <string name="source_hint">\"Only NetEase\" keeps other apps\' sounds on the phone. If Sonos stays silent while NetEase plays and \"Silence sent\" keeps rising, NetEase is blocking capture.</string>
+    <string name="source_locked">Stop casting to change this.</string>
 </resources>

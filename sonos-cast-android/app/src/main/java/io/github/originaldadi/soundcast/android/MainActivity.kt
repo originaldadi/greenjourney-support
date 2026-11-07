@@ -58,6 +58,8 @@ import io.github.originaldadi.soundcast.R
 import io.github.originaldadi.soundcast.core.SonosClient
 import io.github.originaldadi.soundcast.core.SonosGroup
 import io.github.originaldadi.soundcast.core.SsdpDiscovery
+import io.github.originaldadi.soundcast.core.WavStreamServer
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -100,6 +102,8 @@ private fun CastScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val status by CastState.status.collectAsState()
+    remember { Settings.load(context) }
+    val neteaseInstalled = remember { Settings.isNeteaseInstalled(context) }
 
     var groups by remember { mutableStateOf<List<SonosGroup>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
@@ -231,11 +235,18 @@ private fun CastScreen() {
                 Button(onClick = { CastService.stop(context) }, modifier = Modifier.fillMaxWidth()) {
                     Text(stringResource(R.string.stop))
                 }
+                if (neteaseInstalled) {
+                    OutlinedButton(
+                        onClick = { Settings.neteaseLaunchIntent(context)?.let { context.startActivity(it) } },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(stringResource(R.string.open_netease)) }
+                }
             } else {
                 Button(onClick = ::startCasting, enabled = current != null, modifier = Modifier.fillMaxWidth()) {
                     Text(stringResource(R.string.start))
                 }
             }
+            AdvancedPanel(casting = active, neteaseInstalled = neteaseInstalled)
             Text(
                 stringResource(R.string.hint),
                 style = MaterialTheme.typography.bodySmall,
@@ -261,6 +272,81 @@ private fun StatusLine(status: CastStatus) {
             stringResource(R.string.stream_health, status.dropped, status.silence),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun AdvancedPanel(casting: Boolean, neteaseInstalled: Boolean) {
+    val context = LocalContext.current
+    var expanded by remember { mutableStateOf(false) }
+    val bufferMs by Settings.bufferMillis.collectAsState()
+    val source by Settings.source.collectAsState()
+    // Track the slider locally so dragging is smooth; save when the finger lifts.
+    var sliderMs by remember(bufferMs) { mutableFloatStateOf(bufferMs.toFloat()) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            stringResource(if (expanded) R.string.advanced_hide else R.string.advanced_show),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.clickable { expanded = !expanded }.padding(vertical = 6.dp),
+        )
+        if (!expanded) return@Column
+
+        // ---- Smooth <-> low delay
+        Text(
+            stringResource(R.string.buffer_label, sliderMs / 1000f),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Slider(
+            value = sliderMs,
+            onValueChange = { sliderMs = it },
+            onValueChangeFinished = { Settings.setBufferMillis(context, (sliderMs / 100f).roundToInt() * 100) },
+            valueRange = WavStreamServer.MIN_QUEUE_MS.toFloat()..WavStreamServer.MAX_QUEUE_MS.toFloat(),
+        )
+        Row {
+            Text(stringResource(R.string.buffer_low_delay), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+            Text(stringResource(R.string.buffer_smooth), style = MaterialTheme.typography.bodySmall)
+        }
+        Text(
+            stringResource(R.string.buffer_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        // ---- Capture source
+        Spacer(Modifier.height(8.dp))
+        Text(stringResource(R.string.source_label), style = MaterialTheme.typography.bodyMedium)
+        SourceOption(
+            label = stringResource(if (neteaseInstalled) R.string.source_netease else R.string.source_netease_missing),
+            selected = source == CaptureSource.NETEASE && neteaseInstalled,
+            enabled = !casting && neteaseInstalled,
+        ) { Settings.setSource(context, CaptureSource.NETEASE) }
+        SourceOption(
+            label = stringResource(R.string.source_all),
+            selected = source == CaptureSource.ALL_APPS || !neteaseInstalled,
+            enabled = !casting,
+        ) { Settings.setSource(context, CaptureSource.ALL_APPS) }
+        Text(
+            stringResource(if (casting) R.string.source_locked else R.string.source_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun SourceOption(label: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick, enabled = enabled)
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

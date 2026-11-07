@@ -37,7 +37,14 @@ class WavStreamServer(
     val port: Int get() = server?.localPort ?: -1
     val clientCount: Int get() = clients.size
 
-    /** Chunks thrown away because a speaker fell more than ~2 s behind. */
+    /**
+     * How much audio may wait for each speaker before the oldest is dropped. Lower
+     * means less delay but more risk of skips. Can be changed while streaming.
+     */
+    @Volatile var maxQueuedMillis: Int = DEFAULT_QUEUE_MS
+        set(value) { field = value.coerceIn(MIN_QUEUE_MS, MAX_QUEUE_MS) }
+
+    /** Chunks thrown away because a speaker fell further behind than [maxQueuedMillis]. */
     val droppedChunks = AtomicLong()
     /** 100 ms silence blocks sent while nothing was playing. */
     val silenceChunks = AtomicLong()
@@ -74,10 +81,10 @@ class WavStreamServer(
     fun publish(pcm: ByteArray, length: Int = pcm.size) {
         if (clients.isEmpty() || length <= 0) return
         val chunk = pcm.copyOf(length)
+        val limit = queueLimit(length, maxQueuedMillis, bytesPerSecond)
         for (q in clients) {
-            while (!q.offer(chunk)) {
-                q.poll()
-                droppedChunks.incrementAndGet()
+            while (q.size >= limit || !q.offer(chunk)) {
+                if (q.poll() != null) droppedChunks.incrementAndGet()
             }
         }
     }
@@ -118,10 +125,10 @@ class WavStreamServer(
     }
 
     private fun streamTo(out: OutputStream) {
-        // Up to ~2 s of audio can wait here (50 ms chunks). Speakers read in bursts,
-        // so a short queue overflows between bursts and audio is thrown away, which is
-        // heard as stutter. Audio is dropped only when the queue is completely full.
-        val queue = ArrayBlockingQueue<ByteArray>(MAX_QUEUED_CHUNKS)
+        // Speakers read in bursts, so a short queue overflows between bursts and audio
+        // is thrown away, heard as stutter. The real limit is [maxQueuedMillis],
+        // enforced in publish(); the capacity is just a hard ceiling.
+        val queue = ArrayBlockingQueue<ByteArray>(QUEUE_CAPACITY)
         clients += queue
         val silence = ByteArray((bytesPerSecond / 10) and 0x7FFFFFFC) // 100 ms
         var idleMillis = 0L
@@ -150,9 +157,18 @@ class WavStreamServer(
 
     companion object {
         const val STREAM_PATH = "/stream.wav"
-        private const val MAX_QUEUED_CHUNKS = 40
+        const val MIN_QUEUE_MS = 200
+        const val MAX_QUEUE_MS = 3000
+        const val DEFAULT_QUEUE_MS = 2000
+        private const val QUEUE_CAPACITY = 1024
         private const val SEND_BUFFER_BYTES = 64 * 1024 // ~0.4 s at CD quality
         private const val IDLE_BEFORE_SILENCE_MS = 500L
+
+        /** How many chunks of [chunkBytes] fit in [maxMillis] of audio (at least 1). */
+        fun queueLimit(chunkBytes: Int, maxMillis: Int, bytesPerSecond: Int): Int {
+            val chunkMillis = (chunkBytes * 1000L / bytesPerSecond).coerceAtLeast(1)
+            return (maxMillis / chunkMillis).toInt().coerceIn(1, QUEUE_CAPACITY)
+        }
 
         fun responseHeaders(): String =
             "HTTP/1.1 200 OK\r\n" +

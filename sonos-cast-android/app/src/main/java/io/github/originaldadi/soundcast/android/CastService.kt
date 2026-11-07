@@ -34,6 +34,7 @@ import io.github.originaldadi.soundcast.core.SonosGroup
 import io.github.originaldadi.soundcast.core.WavStreamServer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -53,6 +54,7 @@ class CastService : Service() {
     private var recorder: AudioRecord? = null
     private var server: WavStreamServer? = null
     private var group: SonosGroup? = null
+    private var settingsJob: Job? = null
     private var wifiLocks: List<WifiManager.WifiLock> = emptyList()
     private var wakeLock: PowerManager.WakeLock? = null
     @Volatile private var capturing = false
@@ -71,6 +73,7 @@ class CastService : Service() {
     }
 
     private fun start(intent: Intent) {
+        Settings.load(this)
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
         val resultData = intent.parcelable<Intent>(EXTRA_RESULT_DATA)
         val target = SonosGroup(
@@ -126,6 +129,9 @@ class CastService : Service() {
         recorder = record
 
         val wav = WavStreamServer(SAMPLE_RATE, CHANNELS, PREFERRED_PORT)
+        wav.maxQueuedMillis = Settings.bufferMillis.value
+        // The slider applies live while casting.
+        settingsJob = scope.launch { Settings.bufferMillis.collect { ms -> wav.maxQueuedMillis = ms } }
         val port = try {
             wav.start()
         } catch (e: Exception) {
@@ -165,11 +171,17 @@ class CastService : Service() {
         check(ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             "microphone/audio permission not granted"
         }
-        val config = AudioPlaybackCaptureConfiguration.Builder(mp)
-            .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-            .addMatchingUsage(AudioAttributes.USAGE_GAME)
-            .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-            .build()
+        val builder = AudioPlaybackCaptureConfiguration.Builder(mp)
+        val neteaseUid = Settings.neteaseUid(this)
+        if (Settings.source.value == CaptureSource.NETEASE && neteaseUid != null) {
+            // Only NetEase Cloud Music: other apps' sounds stay on the phone.
+            builder.addMatchingUid(neteaseUid)
+        } else {
+            builder.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+        }
+        val config = builder.build()
         val format = AudioFormat.Builder()
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
             .setSampleRate(SAMPLE_RATE)
@@ -236,6 +248,8 @@ class CastService : Service() {
 
     private fun stopCasting(stopSpeaker: Boolean, keepService: Boolean = false, keepStatus: Boolean = false) {
         capturing = false
+        settingsJob?.cancel()
+        settingsJob = null
         releaseLocks()
         recorder?.let { r -> runCatching { r.stop() }; r.release() }
         recorder = null
