@@ -1,0 +1,6 @@
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="oval"><solid android:color="#FF2E7D5B" /></shape>
+    </item>
+    <item android:drawable="@drawable/ic_cast" android:top="12dp" android:bottom="12dp" android:left="12dp" android:right="12dp" />
+</layer-list>
