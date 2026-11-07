@@ -13,6 +13,7 @@ sealed interface CastStatus {
         val streamUrl: String,
         val dropped: Long = 0,
         val silence: Long = 0,
+        val connections: Long = 0,
     ) : CastStatus
     data class Failed(val message: String) : CastStatus
 }

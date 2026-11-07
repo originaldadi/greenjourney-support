@@ -293,6 +293,35 @@ class CoreTest {
         }
     }
 
+    @Test fun newSpeakerGetsRecentAudioAtOnce() {
+        val server = WavStreamServer()
+        val port = server.start()
+        try {
+            // 2 s of 50 ms chunks captured before the speaker connects; chunk i is filled with i+1.
+            repeat(40) { i -> server.publish(ByteArray(8820) { (i + 1).toByte() }) }
+            Socket(InetAddress.getLoopbackAddress(), port).use { s ->
+                s.soTimeout = 3000
+                s.getOutputStream().write("GET /stream.wav HTTP/1.1\r\n\r\n".toByteArray())
+                val input = DataInputStream(s.getInputStream())
+                readHead(input)
+                input.readFully(ByteArray(44))
+                // Only the last 1.5 s (30 chunks: 11..40) is replayed, immediately and in order.
+                val started = System.currentTimeMillis()
+                for (i in 10 until 40) {
+                    val got = ByteArray(8820).also { input.readFully(it) }
+                    assertTrue("chunk $i", got.all { it == (i + 1).toByte() })
+                }
+                assertTrue("replay should not wait for real time", System.currentTimeMillis() - started < 1000)
+                assertEquals(1L, server.connections.get())
+                // Live audio follows the replay without a gap or repeat.
+                server.publish(ByteArray(8820) { 99 })
+                assertTrue(ByteArray(8820).also { input.readFully(it) }.all { it == 99.toByte() })
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
     @Test fun captureJitterDoesNotInsertSilence() {
         val server = WavStreamServer()
         val port = server.start()

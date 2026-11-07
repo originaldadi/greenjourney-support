@@ -156,7 +156,11 @@ class CastService : Service() {
                     kotlinx.coroutines.delay(2000)
                     val now = CastState.status.value
                     if (now is CastStatus.Casting && server === wav) {
-                        CastState.set(now.copy(dropped = wav.droppedChunks.get(), silence = wav.silenceChunks.get()))
+                        CastState.set(now.copy(
+                            dropped = wav.droppedChunks.get(),
+                            silence = wav.silenceChunks.get(),
+                            connections = wav.connections.get(),
+                        ))
                     }
                 }
             } catch (e: Exception) {

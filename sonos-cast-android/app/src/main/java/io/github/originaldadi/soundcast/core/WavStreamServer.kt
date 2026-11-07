@@ -48,6 +48,14 @@ class WavStreamServer(
     val droppedChunks = AtomicLong()
     /** 100 ms silence blocks sent while nothing was playing. */
     val silenceChunks = AtomicLong()
+    /** Stream connections opened by speakers. More than one per session means reconnects. */
+    val connections = AtomicLong()
+
+    // The most recent audio, replayed to a speaker the moment it connects so it can
+    // fill its own buffer at once instead of in real time (which causes early skips).
+    private val lock = Any()
+    private val history = ArrayDeque<ByteArray>()
+    private var historyBytes = 0
 
     fun start(): Int {
         val ss = ServerSocket()
@@ -76,18 +84,33 @@ class WavStreamServer(
         sockets.forEach { runCatching { it.close() } }
         sockets.clear()
         clients.clear()
+        synchronized(lock) {
+            history.clear()
+            historyBytes = 0
+        }
     }
 
     fun publish(pcm: ByteArray, length: Int = pcm.size) {
-        if (clients.isEmpty() || length <= 0) return
+        if (length <= 0) return
         val chunk = pcm.copyOf(length)
         val limit = queueLimit(length, maxQueuedMillis, bytesPerSecond)
-        for (q in clients) {
-            while (q.size >= limit || !q.offer(chunk)) {
-                if (q.poll() != null) droppedChunks.incrementAndGet()
+        synchronized(lock) {
+            history.addLast(chunk)
+            historyBytes += length
+            val keepBytes = prerollMillis().toLong() * bytesPerSecond / 1000
+            while (history.size > 1 && historyBytes - history.first().size >= keepBytes) {
+                historyBytes -= history.removeFirst().size
+            }
+            for (q in clients) {
+                while (q.size >= limit || !q.offer(chunk)) {
+                    if (q.poll() != null) droppedChunks.incrementAndGet()
+                }
             }
         }
     }
+
+    /** Replay at most this much on connect, and never more than the queue may hold. */
+    private fun prerollMillis(): Int = minOf(PREROLL_MS, maxQueuedMillis)
 
     private fun serve(socket: Socket) {
         try {
@@ -129,7 +152,12 @@ class WavStreamServer(
         // is thrown away, heard as stutter. The real limit is [maxQueuedMillis],
         // enforced in publish(); the capacity is just a hard ceiling.
         val queue = ArrayBlockingQueue<ByteArray>(QUEUE_CAPACITY)
-        clients += queue
+        synchronized(lock) {
+            // Atomic with publish(): no chunk is missed or sent twice.
+            history.forEach { queue.offer(it) }
+            clients += queue
+        }
+        connections.incrementAndGet()
         val silence = ByteArray((bytesPerSecond / 10) and 0x7FFFFFFC) // 100 ms
         var idleMillis = 0L
         try {
@@ -157,6 +185,7 @@ class WavStreamServer(
 
     companion object {
         const val STREAM_PATH = "/stream.wav"
+        const val PREROLL_MS = 1500
         const val MIN_QUEUE_MS = 200
         const val MAX_QUEUE_MS = 3000
         const val DEFAULT_QUEUE_MS = 2000

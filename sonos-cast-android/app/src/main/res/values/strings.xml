@@ -12,7 +12,7 @@
     <string name="hint">Music arrives a few seconds late, which is normal for Sonos. Some apps block audio capture and will stay silent. Your phone keeps playing too, so turn its volume down.</string>
     <string name="status_idle">Not casting</string>
     <string name="status_starting">Connecting to %1$s…</string>
-    <string name="stream_health">Skipped audio: %1$d · Silence sent: %2$d</string>
+    <string name="stream_health">Skipped audio: %1$d · Silence sent: %2$d · Connections: %3$d</string>
     <string name="status_casting">Casting to %1$s</string>
     <string name="need_audio_permission">The audio permission is needed to capture music from other apps.</string>
     <string name="notif_channel">Casting</string>
