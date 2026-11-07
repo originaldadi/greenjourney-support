@@ -76,6 +76,9 @@ class WavStreamServer(
     private fun serve(socket: Socket) {
         try {
             socket.tcpNoDelay = true
+            // Every byte waiting in the phone's TCP send buffer is extra delay: at
+            // 176 KB/s an auto-sized buffer can hold several seconds. Keep it small.
+            socket.sendBufferSize = SEND_BUFFER_BYTES
             socket.soTimeout = 10_000
             val request = readRequestHead(socket.getInputStream()) ?: return
             socket.soTimeout = 0
@@ -106,14 +109,17 @@ class WavStreamServer(
     }
 
     private fun streamTo(out: OutputStream) {
-        // ~1.5 s of audio per client at 50 ms per chunk.
-        val queue = ArrayBlockingQueue<ByteArray>(32)
+        // At most ~300 ms of audio waits here (50 ms chunks). The speaker keeps its
+        // own multi-second buffer to ride out WiFi hiccups, so a deep queue here only
+        // adds delay.
+        val queue = ArrayBlockingQueue<ByteArray>(MAX_QUEUED_CHUNKS)
         clients += queue
-        // 100 ms of silence, written if capture stalls so the speaker doesn't time out.
+        // When capture goes quiet, send silence in real time (100 ms per 100 ms of
+        // waiting) so the speaker neither times out nor runs dry and re-buffers.
         val silence = ByteArray((bytesPerSecond / 10) and 0x7FFFFFFC)
         try {
             while (running) {
-                val chunk = queue.poll(250, TimeUnit.MILLISECONDS) ?: silence
+                val chunk = queue.poll(100, TimeUnit.MILLISECONDS) ?: silence
                 out.write(chunk)
                 if (queue.isEmpty()) out.flush()
             }
@@ -124,6 +130,8 @@ class WavStreamServer(
 
     companion object {
         const val STREAM_PATH = "/stream.wav"
+        private const val MAX_QUEUED_CHUNKS = 6
+        private const val SEND_BUFFER_BYTES = 32 * 1024 // ~0.2 s at CD quality
 
         fun responseHeaders(): String =
             "HTTP/1.1 200 OK\r\n" +
