@@ -1,6 +1,5 @@
 package io.github.originaldadi.soundcast.core
 
-import com.sun.net.httpserver.HttpServer
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -91,43 +90,68 @@ class CoreTest {
 
     // ---------------------------------------------------------------- SOAP
 
+    /** Minimal fake Sonos control endpoint (plain sockets: Android unit tests lack com.sun.net.httpserver). */
     private class FakeSpeaker : AutoCloseable {
         val calls = Collections.synchronizedList(mutableListOf<Triple<String, String, String>>()) // path, action, body
-        var volume = 37
-        private val server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
-        val port get() = server.address.port
+        @Volatile var volume = 37
+        private val server = java.net.ServerSocket(0, 50, InetAddress.getLoopbackAddress())
+        val port get() = server.localPort
 
         init {
-            server.createContext("/") { ex ->
-                val body = ex.requestBody.readBytes().toString(Charsets.UTF_8)
-                val action = ex.requestHeaders.getFirst("SOAPACTION").orEmpty()
-                calls += Triple(ex.requestURI.path, action, body)
-                val name = action.trim('"').substringAfter('#')
-                val (code, resp) = when (name) {
-                    "GetGroupVolume" -> 200 to envelope("<u:GetGroupVolumeResponse xmlns:u=\"x\"><CurrentVolume>$volume</CurrentVolume></u:GetGroupVolumeResponse>")
-                    "GetZoneGroupState" -> 200 to envelope(
-                        "<u:GetZoneGroupStateResponse xmlns:u=\"x\"><ZoneGroupState>" +
-                            SonosClient.escapeXml(
-                                "<ZoneGroupState><ZoneGroups><ZoneGroup Coordinator=\"R1\"><ZoneGroupMember UUID=\"R1\" " +
-                                    "Location=\"http://10.1.1.1:1400/xml/device_description.xml\" ZoneName=\"Office &amp; Den\"/>" +
-                                    "</ZoneGroup></ZoneGroups></ZoneGroupState>",
-                            ) +
-                            "</ZoneGroupState></u:GetZoneGroupStateResponse>",
-                    )
-                    "Play" -> if (volume < 0) 500 to envelope("<s:Fault><detail><UPnPError><errorCode>701</errorCode></UPnPError></detail></s:Fault>") else 200 to envelope("")
-                    else -> 200 to envelope("")
+            thread(isDaemon = true) {
+                while (true) {
+                    val s = try { server.accept() } catch (_: java.io.IOException) { break }
+                    thread(isDaemon = true) { s.use { handle(it) } }
                 }
-                val bytes = resp.toByteArray()
-                ex.sendResponseHeaders(code, bytes.size.toLong())
-                ex.responseBody.use { it.write(bytes) }
             }
-            server.start()
+        }
+
+        private fun handle(socket: Socket) {
+            val input = DataInputStream(socket.getInputStream())
+            val headLines = mutableListOf<String>()
+            val line = StringBuilder()
+            while (true) {
+                val c = input.readUnsignedByte().toChar()
+                if (c == '\n') {
+                    val l = line.toString().trimEnd('\r')
+                    line.clear()
+                    if (l.isEmpty()) break
+                    headLines += l
+                } else {
+                    line.append(c)
+                }
+            }
+            val path = headLines.first().split(' ')[1]
+            val headers = headLines.drop(1).associate { it.substringBefore(':').trim().lowercase() to it.substringAfter(':').trim() }
+            val body = ByteArray(headers["content-length"]?.toInt() ?: 0).also { input.readFully(it) }.toString(Charsets.UTF_8)
+            val action = headers["soapaction"].orEmpty()
+            calls += Triple(path, action, body)
+            val name = action.trim('"').substringAfter('#')
+            val (code, resp) = when (name) {
+                "GetGroupVolume" -> 200 to envelope("<u:GetGroupVolumeResponse xmlns:u=\"x\"><CurrentVolume>$volume</CurrentVolume></u:GetGroupVolumeResponse>")
+                "GetZoneGroupState" -> 200 to envelope(
+                    "<u:GetZoneGroupStateResponse xmlns:u=\"x\"><ZoneGroupState>" +
+                        SonosClient.escapeXml(
+                            "<ZoneGroupState><ZoneGroups><ZoneGroup Coordinator=\"R1\"><ZoneGroupMember UUID=\"R1\" " +
+                                "Location=\"http://10.1.1.1:1400/xml/device_description.xml\" ZoneName=\"Office &amp; Den\"/>" +
+                                "</ZoneGroup></ZoneGroups></ZoneGroupState>",
+                        ) +
+                        "</ZoneGroupState></u:GetZoneGroupStateResponse>",
+                )
+                "Play" -> if (volume < 0) 500 to envelope("<s:Fault><detail><UPnPError><errorCode>701</errorCode></UPnPError></detail></s:Fault>") else 200 to envelope("")
+                else -> 200 to envelope("")
+            }
+            val bytes = resp.toByteArray()
+            val out = socket.getOutputStream()
+            out.write("HTTP/1.1 $code X\r\nContent-Type: text/xml\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray())
+            out.write(bytes)
+            out.flush()
         }
 
         private fun envelope(inner: String) =
             "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>$inner</s:Body></s:Envelope>"
 
-        override fun close() = server.stop(0)
+        override fun close() = server.close()
     }
 
     @Test fun playStreamSetsUriThenPlays() = FakeSpeaker().use { fake ->
