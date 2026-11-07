@@ -7,6 +7,9 @@ on:
     paths: ["sonos-cast-android/**", ".github/workflows/soundcast-android.yml"]
   workflow_dispatch:
 
+permissions:
+  contents: write  # publish the APK to the "soundcast-latest" release
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -28,3 +31,15 @@ jobs:
         with:
           name: SoundCast-debug-apk
           path: sonos-cast-android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish APK to the soundcast-latest release
+        if: github.event_name != 'pull_request'
+        run: cp app/build/outputs/apk/debug/app-debug.apk SoundCast.apk
+      - uses: softprops/action-gh-release@v2
+        if: github.event_name != 'pull_request'
+        with:
+          tag_name: soundcast-latest
+          target_commitish: ${{ github.sha }}
+          name: SoundCast (latest build)
+          body: Debug build of SoundCast from ${{ github.sha }}. Download SoundCast.apk on your Android phone and open it to install.
+          prerelease: true
+          files: sonos-cast-android/SoundCast.apk
