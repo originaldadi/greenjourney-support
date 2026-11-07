@@ -8,7 +8,12 @@ import kotlinx.coroutines.flow.asStateFlow
 sealed interface CastStatus {
     data object Idle : CastStatus
     data class Starting(val group: SonosGroup) : CastStatus
-    data class Casting(val group: SonosGroup, val streamUrl: String) : CastStatus
+    data class Casting(
+        val group: SonosGroup,
+        val streamUrl: String,
+        val dropped: Long = 0,
+        val silence: Long = 0,
+    ) : CastStatus
     data class Failed(val message: String) : CastStatus
 }
 

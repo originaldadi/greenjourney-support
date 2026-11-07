@@ -255,4 +255,12 @@ private fun StatusLine(status: CastStatus) {
         is CastStatus.Failed -> status.message to MaterialTheme.colorScheme.error
     }
     Text(text, style = MaterialTheme.typography.titleSmall, color = color)
+    if (status is CastStatus.Casting) {
+        // Diagnostics: "skipped" means the speaker fell behind and audio was dropped.
+        Text(
+            stringResource(R.string.stream_health, status.dropped, status.silence),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }

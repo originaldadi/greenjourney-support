@@ -259,6 +259,33 @@ class CoreTest {
         }
     }
 
+    @Test fun captureJitterDoesNotInsertSilence() {
+        val server = WavStreamServer()
+        val port = server.start()
+        try {
+            Socket(InetAddress.getLoopbackAddress(), port).use { s ->
+                s.soTimeout = 3000
+                s.getOutputStream().write("GET /stream.wav HTTP/1.1\r\n\r\n".toByteArray())
+                val input = DataInputStream(s.getInputStream())
+                readHead(input)
+                input.readFully(ByteArray(44))
+                val deadline = System.currentTimeMillis() + 2000
+                while (server.clientCount == 0 && System.currentTimeMillis() < deadline) Thread.sleep(10)
+                val a = ByteArray(800) { 7 }
+                val b = ByteArray(800) { 9 }
+                server.publish(a)
+                Thread.sleep(300) // a capture hiccup shorter than the idle threshold
+                server.publish(b)
+                val got = ByteArray(1600).also { input.readFully(it) }
+                assertArrayEquals(a + b, got)
+                assertEquals(0L, server.silenceChunks.get())
+                assertEquals(0L, server.droppedChunks.get())
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
     @Test fun keepsConnectionAliveWithSilence() {
         val server = WavStreamServer()
         val port = server.start()

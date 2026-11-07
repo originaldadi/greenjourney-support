@@ -12,6 +12,7 @@ import java.nio.ByteOrder
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 /**
@@ -35,6 +36,11 @@ class WavStreamServer(
 
     val port: Int get() = server?.localPort ?: -1
     val clientCount: Int get() = clients.size
+
+    /** Chunks thrown away because a speaker fell more than ~2 s behind. */
+    val droppedChunks = AtomicLong()
+    /** 100 ms silence blocks sent while nothing was playing. */
+    val silenceChunks = AtomicLong()
 
     fun start(): Int {
         val ss = ServerSocket()
@@ -69,7 +75,10 @@ class WavStreamServer(
         if (clients.isEmpty() || length <= 0) return
         val chunk = pcm.copyOf(length)
         for (q in clients) {
-            while (!q.offer(chunk)) q.poll()
+            while (!q.offer(chunk)) {
+                q.poll()
+                droppedChunks.incrementAndGet()
+            }
         }
     }
 
@@ -109,18 +118,29 @@ class WavStreamServer(
     }
 
     private fun streamTo(out: OutputStream) {
-        // At most ~300 ms of audio waits here (50 ms chunks). The speaker keeps its
-        // own multi-second buffer to ride out WiFi hiccups, so a deep queue here only
-        // adds delay.
+        // Up to ~2 s of audio can wait here (50 ms chunks). Speakers read in bursts,
+        // so a short queue overflows between bursts and audio is thrown away, which is
+        // heard as stutter. Audio is dropped only when the queue is completely full.
         val queue = ArrayBlockingQueue<ByteArray>(MAX_QUEUED_CHUNKS)
         clients += queue
-        // When capture goes quiet, send silence in real time (100 ms per 100 ms of
-        // waiting) so the speaker neither times out nor runs dry and re-buffers.
-        val silence = ByteArray((bytesPerSecond / 10) and 0x7FFFFFFC)
+        val silence = ByteArray((bytesPerSecond / 10) and 0x7FFFFFFC) // 100 ms
+        var idleMillis = 0L
         try {
             while (running) {
-                val chunk = queue.poll(100, TimeUnit.MILLISECONDS) ?: silence
-                out.write(chunk)
+                val chunk = queue.poll(100, TimeUnit.MILLISECONDS)
+                if (chunk != null) {
+                    idleMillis = 0
+                    out.write(chunk)
+                } else {
+                    // Capture jitter of a few hundred ms is normal; padding it with
+                    // silence would cut holes in the music. Only once capture has been
+                    // quiet for a while (nothing playing), send silence in real time so
+                    // the speaker doesn't time out.
+                    idleMillis += 100
+                    if (idleMillis < IDLE_BEFORE_SILENCE_MS) continue
+                    silenceChunks.incrementAndGet()
+                    out.write(silence)
+                }
                 if (queue.isEmpty()) out.flush()
             }
         } finally {
@@ -130,8 +150,9 @@ class WavStreamServer(
 
     companion object {
         const val STREAM_PATH = "/stream.wav"
-        private const val MAX_QUEUED_CHUNKS = 6
-        private const val SEND_BUFFER_BYTES = 32 * 1024 // ~0.2 s at CD quality
+        private const val MAX_QUEUED_CHUNKS = 40
+        private const val SEND_BUFFER_BYTES = 64 * 1024 // ~0.4 s at CD quality
+        private const val IDLE_BEFORE_SILENCE_MS = 500L
 
         fun responseHeaders(): String =
             "HTTP/1.1 200 OK\r\n" +

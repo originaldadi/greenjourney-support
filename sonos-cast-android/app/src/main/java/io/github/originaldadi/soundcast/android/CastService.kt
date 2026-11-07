@@ -17,10 +17,12 @@ import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -51,6 +53,8 @@ class CastService : Service() {
     private var recorder: AudioRecord? = null
     private var server: WavStreamServer? = null
     private var group: SonosGroup? = null
+    private var wifiLocks: List<WifiManager.WifiLock> = emptyList()
+    private var wakeLock: PowerManager.WakeLock? = null
     @Volatile private var capturing = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -130,6 +134,7 @@ class CastService : Service() {
         }
         server = wav
 
+        holdLocks()
         capturing = true
         record.startRecording()
         thread(name = "audio-capture", isDaemon = true) { captureLoop(record, wav) }
@@ -140,6 +145,14 @@ class CastService : Service() {
                 val url = "http://$ip:$port${WavStreamServer.STREAM_PATH}"
                 sonos.playStream(target.coordinatorHost, url, getString(R.string.stream_title, Build.MODEL))
                 CastState.set(CastStatus.Casting(target, url))
+                // Report stream health on screen so stutter can be diagnosed.
+                while (server === wav) {
+                    kotlinx.coroutines.delay(2000)
+                    val now = CastState.status.value
+                    if (now is CastStatus.Casting && server === wav) {
+                        CastState.set(now.copy(dropped = wav.droppedChunks.get(), silence = wav.silenceChunks.get()))
+                    }
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "Could not start playback", e)
                 fail(e.message ?: "Could not start the speaker")
@@ -165,13 +178,15 @@ class CastService : Service() {
         val minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT)
         return AudioRecord.Builder()
             .setAudioFormat(format)
-            .setBufferSizeInBytes(maxOf(minBuffer, CHUNK_BYTES * 4))
+            .setBufferSizeInBytes(maxOf(minBuffer * 4, SAMPLE_RATE * CHANNELS * 2 / 2)) // >= 0.5 s
             .setAudioPlaybackCaptureConfig(config)
             .build()
             .also { check(it.state == AudioRecord.STATE_INITIALIZED) { "recorder failed to initialise" } }
     }
 
     private fun captureLoop(record: AudioRecord, wav: WavStreamServer) {
+        // Audio threads that get descheduled miss data and cause clicks.
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
         val buffer = ByteArray(CHUNK_BYTES)
         while (capturing) {
             val n = record.read(buffer, 0, buffer.size)
@@ -196,8 +211,32 @@ class CastService : Service() {
         }
     }
 
+    /**
+     * Without these, WiFi power saving batches packets and the CPU may nap with the
+     * screen off; both starve the speaker and make playback stutter.
+     */
+    @Suppress("DEPRECATION")
+    private fun holdLocks() {
+        releaseLocks()
+        val wifi = applicationContext.getSystemService(WifiManager::class.java)
+        wifiLocks = listOf(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, WifiManager.WIFI_MODE_FULL_HIGH_PERF).map { mode ->
+            wifi.createWifiLock(mode, "soundcast:stream").apply { setReferenceCounted(false); acquire() }
+        }
+        wakeLock = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "soundcast:capture")
+            .apply { setReferenceCounted(false); acquire(12 * 60 * 60 * 1000L) }
+    }
+
+    private fun releaseLocks() {
+        wifiLocks.forEach { runCatching { it.release() } }
+        wifiLocks = emptyList()
+        wakeLock?.let { runCatching { it.release() } }
+        wakeLock = null
+    }
+
     private fun stopCasting(stopSpeaker: Boolean, keepService: Boolean = false, keepStatus: Boolean = false) {
         capturing = false
+        releaseLocks()
         recorder?.let { r -> runCatching { r.stop() }; r.release() }
         recorder = null
         server?.stop()
